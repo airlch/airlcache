@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"log"
 	"sync"
 )
 
@@ -36,10 +37,32 @@ func (g GetterFunc) Get(key string) ([]byte, error) {
 	return g(key)
 }
 
+//参数可配置
+type Option func(*Group)
+
+func GroupName(name string) Option {
+	return func(g *Group) {
+		g.name = name
+	}
+}
+
+func GroupCacheBytes(cachebytes int64) Option {
+	return func(g *Group) {
+		g.mainCache = cache{cacheBytes: cachebytes}
+	}
+}
+
+func GroupGetter(getter Getter) Option {
+	return func(g *Group) {
+		g.getter = getter
+	}
+}
+
 type Group struct {
-	name      string
-	getter    Getter
-	mainCache cache
+	name       string
+	getter     Getter
+	mainCache  cache
+	peerPicker PeerPicker
 }
 
 var (
@@ -47,17 +70,36 @@ var (
 	groups = make(map[string]*Group)
 )
 
-func NewGroup(name string, cachebytes int64, getter Getter) *Group {
+// func NewGroup(name string, cachebytes int64, getter Getter) *Group {
+// 	mu.Lock()
+// 	defer mu.Unlock()
+// 	var group = &Group{
+// 		name:      name,
+// 		getter:    getter,
+// 		mainCache: cache{cacheBytes: cachebytes},
+// 	}
+// 	groups[name] = group
+
+// 	return group
+// }
+
+func NewGroup(opt ...Option) *Group {
 	mu.Lock()
 	defer mu.Unlock()
-	var group = &Group{
-		name:      name,
-		getter:    getter,
-		mainCache: cache{cacheBytes: cachebytes},
-	}
-	groups[name] = group
 
-	return group
+	var defaultGroup = &Group{
+		name:      "default",
+		getter:    nil,
+		mainCache: cache{cacheBytes: 2 << 10},
+	}
+
+	for _, o := range opt {
+		o(defaultGroup)
+	}
+
+	groups[defaultGroup.name] = defaultGroup
+
+	return defaultGroup
 }
 
 func GetGroup(name string) *Group {
@@ -80,6 +122,7 @@ func (g *Group) Get(key string) (ByteView, error) {
 	}
 
 	if v, ok := g.mainCache.Get(key); ok {
+		log.Println("从当前缓存中获取到数据")
 		return v, nil
 	}
 
@@ -88,6 +131,19 @@ func (g *Group) Get(key string) (ByteView, error) {
 
 func (g *Group) load(key string) (ByteView, error) {
 	//远程获取
+	var err error
+	var res []byte
+
+	if g.peerPicker != nil {
+		log.Println("111111111")
+		if peergetter, ok := g.peerPicker.PickPeer(key); ok {
+			log.Println("333333333")
+			if res, err = peergetter.Get(g.name, key); err != nil {
+				log.Println("从远程节点获取到数据返回", string(res))
+				return ByteView{res}, nil
+			}
+		}
+	}
 
 	return g.getlocal(key)
 }
@@ -112,3 +168,12 @@ func (g *Group) populateCache(key string, value ByteView) {
 // 流程 ⑴ ：从 mainCache 中查找缓存，如果存在则返回缓存值。
 // 流程 ⑶ ：缓存不存在，则调用 load 方法，load 调用 getLocally（分布式场景下会调用 getFromPeer 从其他节点获取），
 // getLocally 调用用户回调函数 g.getter.Get() 获取源数据，并且将源数据添加到缓存 mainCache 中（通过 populateCache 方法）
+
+func (g *Group) RegisterPeerPick(peerpick PeerPicker) {
+	if g.peerPicker != nil {
+		log.Println("RegisterPeerPicker called more than once")
+		return
+	}
+
+	g.peerPicker = peerpick
+}
