@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"airlsubject/airlcache/cache/singleflight"
 	"errors"
 	"log"
 	"sync"
@@ -63,6 +64,8 @@ type Group struct {
 	getter     Getter
 	mainCache  cache
 	peerPicker PeerPicker
+	//限制并发请求次数，一次请求内，不管并发多少个请求，都只会获取一次
+	loader *singleflight.Group
 }
 
 var (
@@ -91,6 +94,7 @@ func NewGroup(opt ...Option) *Group {
 		name:      "default",
 		getter:    nil,
 		mainCache: cache{cacheBytes: 2 << 10},
+		loader:    new(singleflight.Group),
 	}
 
 	for _, o := range opt {
@@ -129,23 +133,29 @@ func (g *Group) Get(key string) (ByteView, error) {
 	return g.load(key)
 }
 
-func (g *Group) load(key string) (ByteView, error) {
+func (g *Group) load(key string) (value ByteView, err error) {
 	//远程获取
-	var err error
-	var res []byte
+	//使用loader    限制并发次数
+	bvRes, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peerPicker != nil {
+			if peergetter, ok := g.peerPicker.PickPeer(key); ok {
+				log.Println("获取到数据存储节点：", peergetter.(*httpGetter).baseURL)
+				if res, err := peergetter.Get(g.name, key); err == nil {
+					log.Println("返回数据：", string(res))
+					return ByteView{res}, nil
+				}
 
-	if g.peerPicker != nil {
-		log.Println("111111111")
-		if peergetter, ok := g.peerPicker.PickPeer(key); ok {
-			log.Println("333333333")
-			if res, err = peergetter.Get(g.name, key); err != nil {
-				log.Println("从远程节点获取到数据返回", string(res))
-				return ByteView{res}, nil
+				log.Println("[GeeCache] Failed to get from peer", err)
 			}
 		}
-	}
 
-	return g.getlocal(key)
+		return g.getlocal(key)
+	})
+
+	if err == nil {
+		return bvRes.(ByteView), nil
+	}
+	return
 }
 
 func (g *Group) getlocal(key string) (ByteView, error) {
@@ -156,6 +166,7 @@ func (g *Group) getlocal(key string) (ByteView, error) {
 
 	var val = ByteView{cloneBytes(v)}
 	g.populateCache(key, val)
+	log.Println("从本地缓存方法中获取到数据", string(v))
 
 	return val, nil
 }

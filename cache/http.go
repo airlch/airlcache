@@ -2,11 +2,11 @@ package cache
 
 import (
 	"airlsubject/airlcache/cache/consistenthash"
-	"bufio"
+	//"bufio"
 	"fmt"
+	"io/ioutil"
 
 	//"io"
-	//"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -76,6 +76,8 @@ func (h *HttpPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.log("最终页面返回数据：" + val.String())
+
 	w.Header().Set("Content-Type", "application/json; charset = utf-8")
 	w.Write(val.ByteSlice())
 }
@@ -90,10 +92,12 @@ func (h *httpGetter) Get(group string, key string) ([]byte, error) {
 	var u = fmt.Sprintf("%s%s/%s", h.baseURL, url.QueryEscape(group), url.QueryEscape(key))
 
 	resp, err := http.Get(u)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("server returned: %v", resp.Status)
@@ -102,16 +106,16 @@ func (h *httpGetter) Get(group string, key string) ([]byte, error) {
 	var r []byte
 	//三种读取方式，bufio总体比较快   有缓冲
 	//1 bufio
-	var reader = bufio.NewReader(resp.Body)
+	//var reader = bufio.NewReader(resp.Body)
 
-	if _, err = reader.Read(r); err != nil {
-		return nil, err
-	}
-
-	//2 ioutil
-	// if _, err = ioutil.ReadAll(resp.Body, r); err != nil {
+	// if _, err = reader.Read(r); err != nil {
 	// 	return nil, err
 	// }
+
+	//2 ioutil
+	if r, err = ioutil.ReadAll(resp.Body); err != nil {
+		return nil, err
+	}
 
 	//3 自身reader
 	// if _, err = resp.Body.Read(r); err != nil {
